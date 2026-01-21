@@ -1,143 +1,118 @@
+
 #include <unistd.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <stdlib.h>
+#include <stdio.h>
 
-/*
-** 致命错误：fork / pipe / dup 失败时
-** 考试要求直接输出并退出
-*/
 void fatal(void)
 {
 	write(2, "error: fatal\n", 13);
 	exit(1);
 }
 
-/*
-** 内建命令 cd
-** argv: 当前命令起始位置
-** i: 参数个数（直到 ; 或 |）
-*/
-int cd(char **argv, int i)
+int cd(char **argv, int argc)
 {
-	// cd 参数数量必须是 2：cd + path
-	if (i != 2)
+	if (argc != 2)
 		return (write(2, "error: cd: bad arguments\n", 25), 1);
-
-	// chdir 失败
 	if (chdir(argv[1]) != 0)
 	{
 		write(2, "error: cd: cannot change directory to ", 39);
 		write(2, argv[1], strlen(argv[1]));
 		write(2, "\n", 1);
+		return 1;
 	}
-	return 1;
+	return 0;
 }
 
-/*
-** 执行一个外部命令
-** argv      : 当前命令数组起始
-** i         : 参数个数
-** has_pipe  : 后面是否接 |
-** fd        : 管道 fd（或 stdin/stdout 备份）
-*/
-int exec_cmd(char **argv, int i, int has_pipe, int *fd, char **envp)
+int exec_cmd(char **argv, int argc, int input_fd, int output_fd, char **envp)
 {
 	pid_t pid;
 
-	// 创建子进程
 	if ((pid = fork()) < 0)
 		fatal();
 
-	// 子进程
 	if (pid == 0)
 	{
-		// 把 argv[i] 置 NULL，截断命令参数
-		argv[i] = NULL;
+		argv[argc] = NULL;
 
-		// 如果有 pipe，把 stdout 重定向到管道写端
-		if (has_pipe && dup2(fd[1], 1) < 0)
-			fatal();
+		if (input_fd != STDIN_FILENO)
+		{
+			if (dup2(input_fd, STDIN_FILENO) < 0)
+				fatal();
+			close(input_fd);
+		}
+		if (output_fd != STDOUT_FILENO)
+		{
+			if (dup2(output_fd, STDOUT_FILENO) < 0)
+				fatal();
+			close(output_fd);
+		}
 
-		// 关闭不需要的 fd
-		close(fd[0]);
-		close(fd[1]);
-
-		// 执行命令（考试保证 argv[0] 是完整路径）
 		execve(argv[0], argv, envp);
-
-		// execve 失败
 		write(2, "error: cannot execute ", 22);
 		write(2, argv[0], strlen(argv[0]));
 		write(2, "\n", 1);
 		exit(1);
 	}
 
-	// 父进程等待子进程
 	waitpid(pid, NULL, 0);
-	return 1;
+	return 0;
 }
 
 int main(int argc, char **argv, char **envp)
 {
-	int i = 0;
-	int fd[2];
-	int tmp = dup(0); // 保存最初的 stdin
+	int i = 1;
+	int tmp_input = STDIN_FILENO;
 
-	(void)argc;
-
-	// 主循环：逐段处理 ; 和 |
-	while (argv[i] && argv[i + 1])
+	while (i < argc)
 	{
-		// argv 指针向前推进到当前命令起点
-		argv = &argv[i + 1];
-		i = 0;
-
+		int j = i;
 		// 找到 ; 或 | 或结尾
-		while (argv[i] && strcmp(argv[i], ";") && strcmp(argv[i], "|"))
-			i++;
+		while (j < argc && strcmp(argv[j], ";") && strcmp(argv[j], "|"))
+			j++;
 
-		// 内建命令 cd（只能在父进程执行）
-		if (strcmp(argv[0], "cd") == 0)
-			cd(argv, i);
-
-		// 外部命令
-		else if (i != 0)
+		int is_pipe = (j < argc && strcmp(argv[j], "|") == 0);
+		int cmd_len = j - i;
+		if (cmd_len > 0)
 		{
-			// 如果后面是 |
-			if (argv[i] && strcmp(argv[i], "|") == 0)
-			{
-				// 创建管道
-				if (pipe(fd) < 0)
-					fatal();
-
-				// 执行当前命令，stdout -> 管道
-				exec_cmd(argv, i, 1, fd, envp);
-
-				// stdin 指向管道读端，供下一个命令使用
-				dup2(fd[0], 0);
-
-				close(fd[0]);
-				close(fd[1]);
-			}
-			// 没有 pipe（结尾或 ;）
+			if (strcmp(argv[i], "cd") == 0)
+				cd(&argv[i], cmd_len);
 			else
 			{
-				// 备份 stdin / stdout
-				fd[0] = dup(0);
-				fd[1] = dup(1);
+				int fd[2];
+				int output_fd = STDOUT_FILENO;
 
-				// 正常执行命令
-				exec_cmd(argv, i, 0, fd, envp);
+				if (is_pipe)
+				{
+					if (pipe(fd) < 0)
+						fatal();
+					output_fd = fd[1];
+				}
 
-				// 恢复 stdin
-				dup2(tmp, 0);
+				exec_cmd(&argv[i], cmd_len, tmp_input, output_fd, envp);
 
-				close(fd[0]);
-				close(fd[1]);
+				if (is_pipe)
+				{
+					close(fd[1]);
+					if (tmp_input != STDIN_FILENO)
+						close(tmp_input);
+					tmp_input = fd[0]; // 下一条命令从管道读端读取
+				}
+				else
+				{
+					if (tmp_input != STDIN_FILENO)
+						close(tmp_input);
+					tmp_input = STDIN_FILENO; // 重置 stdin
+				}
 			}
 		}
+
+		i = j + 1;
 	}
-	close(tmp);
+
+	if (tmp_input != STDIN_FILENO)
+		close(tmp_input);
+
 	return 0;
 }
