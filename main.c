@@ -26,11 +26,11 @@ void free_fds(int **fds, int n_cmds)
 	free(fds);
 }
 
-int	ft_strlen(char *str)
+int ft_strlen(char *str)
 {
 	// calculer la taille d'un str
-	int	size;
-	
+	int size;
+
 	size = 0;
 	while (str[size])
 		size++;
@@ -68,6 +68,23 @@ char *ft_strjoin(char *s1, char *s2)
 	return (ptr);
 }
 
+char *ft_strdup(char *str)
+{
+	char *ptr;
+	char *dst;
+
+	if (!str)
+		return 	NULL;
+	dst = malloc(ft_strlen(str) + 1);
+	if (!dst)
+		return 	NULL;
+	ptr = dst;
+	while (*str)
+		*dst++ = *str++;
+	*dst = '\0';
+	return ptr;
+}
+
 t_cmd *build_single_cmd(char **argv, int start, int end)
 {
 	t_cmd *cmd;
@@ -79,6 +96,11 @@ t_cmd *build_single_cmd(char **argv, int start, int end)
 		return (NULL);
 	cmd->argc = end - start + 1;
 	cmd->argv = malloc((cmd->argc + 1) * sizeof(char *));
+	if (!cmd->argv)
+	{
+		free(cmd);
+		return NULL;
+	}
 	while (k < cmd->argc)
 	{
 		(cmd->argv)[k] = argv[start + k];
@@ -122,11 +144,10 @@ int run_cmd(t_cmd *cmd, char **envp)
 	{
 		char *path;
 		char *cmd_path = cmd->argv[0];
-		if (strchr(cmd_path, '/') == NULL) // 没有 /，尝试 /bin/
-		{
-			
+		if (strchr(cmd_path, '/') == NULL)
 			path = ft_strjoin("/bin/", cmd_path);
-		}
+		else
+			path = ft_strdup(cmd_path);
 		execve(path, cmd->argv, envp);
 		free(path);
 		write(2, "error: cannot execute ", 22);
@@ -174,18 +195,7 @@ t_cmd **split_by_pipe(char **argv, int start, int end, int *count)
 	{
 		if (strcmp(argv[k], "|") == 0)
 		{
-			cmd = malloc(sizeof(t_cmd));
-			if (!cmd)
-				return (NULL);
-			cmd->argc = k - start;
-			cmd->argv = malloc((cmd->argc + 1) * sizeof(char *));
-			int i = 0;
-			while (i < (cmd->argc))
-			{
-				cmd->argv[i] = argv[start + i];
-				i++;
-			}
-			cmd->argv[cmd->argc] = NULL;
+			cmd = build_single_cmd(argv, start, k - 1);
 			cmds[j] = cmd;
 			start = k + 1;
 			j++;
@@ -194,12 +204,7 @@ t_cmd **split_by_pipe(char **argv, int start, int end, int *count)
 	}
 	if (start <= end)
 	{
-		cmd = malloc(sizeof(t_cmd));
-		cmd->argc = end - start + 1;
-		cmd->argv = malloc((cmd->argc + 1) * sizeof(char *));
-		for (int i = 0; i < cmd->argc; i++)
-			cmd->argv[i] = argv[start + i];
-		cmd->argv[cmd->argc] = NULL;
+		cmd = build_single_cmd(argv, start, end);
 		cmds[j++] = cmd;
 	}
 	*count = j;
@@ -222,10 +227,7 @@ int **create_pipes(int n_cmds)
 		fds[i] = malloc(sizeof(int) * 2);
 		if (!fds[i] || pipe(fds[i]) < 0)
 		{
-			// 释放已经分配的内存
-			for (int j = 0; j < i; j++)
-				free(fds[j]);
-			free(fds);
+			free_fds(fds, n_cmds - 1);
 			return NULL;
 		}
 		i++;
@@ -296,7 +298,11 @@ int run_piped_cmds(t_cmd **cmds, int n_cmds, char **envp)
 				j++;
 			}
 			char *cmd_path = cmds[i]->argv[0];
-			char *path = ft_strjoin("/bin/", cmd_path);
+			char *path;
+			if (strchr(cmd_path, '/') == NULL)
+				path = ft_strjoin("/bin/", cmd_path);
+			else
+				path = ft_strdup(cmd_path);
 			execve(path, cmds[i]->argv, envp);
 			free(path);
 			write(2, "error: cannot execute command\n", 30);
@@ -356,6 +362,7 @@ int run_all_cmds(char **argv, char **envp)
 			{
 				t_cmd *cmd = build_single_cmd(argv, start, end);
 				run_cmd(cmd, envp);
+				free(cmd);
 			}
 			else
 			{
